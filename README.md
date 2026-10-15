@@ -113,9 +113,23 @@ pip install -r requirements.txt
 pytest
 ```
 
-Kaggle data must be downloaded once into `data/raw/kaggle_sandp500/all_stocks_5yr.csv`
-(`kaggle datasets download -d camnugent/sandp500 -f all_stocks_5yr.csv --unzip`).
-yfinance data fetches and caches automatically on first use.
+`data/raw/kaggle_sandp500/all_stocks_5yr.csv` (the Kaggle file, CC0-1.0 licensed, ~28 MB) is
+committed to the repo so a fresh checkout -- including a Streamlit Community Cloud deploy --
+works with no Kaggle credentials and no manual download step. Everything else under `data/raw/`
+(the yfinance cache) is regenerated on first use and gitignored. To refetch the Kaggle file
+yourself instead: `kaggle datasets download -d camnugent/sandp500 -f all_stocks_5yr.csv --unzip`.
+
+## Deploy your own copy
+
+The app needs no API keys or secrets; the Kaggle CSV it depends on is committed (see above).
+
+1. Fork this repository on GitHub.
+2. Sign in to [Streamlit Community Cloud](https://share.streamlit.io/) with the GitHub account
+   that owns the fork.
+3. **Create app** -> paste the GitHub URL of `app/streamlit_app.py` on your fork's `main` branch
+   (e.g. `https://github.com/<you>/stock_price_prediction/blob/main/app/streamlit_app.py`).
+4. Keep Python 3.12 in Advanced settings. No secrets required.
+5. Deploy. Pushes to `main` update the deployed app automatically.
 
 ## Status
 
