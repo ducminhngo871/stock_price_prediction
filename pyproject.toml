@@ -9,3 +9,6 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+# Ridge's L2 term handles the near-collinear lag features correctly (see model.py);
+# sklearn still warns about the matrix's condition number before regularizing it.
+filterwarnings = ["ignore::sklearn.exceptions.ConvergenceWarning", "ignore:.*ill-conditioned matrix.*:scipy.linalg.LinAlgWarning"]

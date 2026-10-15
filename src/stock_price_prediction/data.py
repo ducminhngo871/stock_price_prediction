@@ -26,6 +26,11 @@ YFINANCE_DIR = ROOT / "data" / "raw" / "yfinance"
 KAGGLE_END = pd.Timestamp("2018-02-07")
 
 
+def available_tickers() -> list[str]:
+    """Tickers present in the Kaggle file (so every one has a full 2013-onward history)."""
+    return sorted(pd.read_csv(KAGGLE_CSV, usecols=["Name"])["Name"].unique().tolist())
+
+
 def load_kaggle(tickers: list[str] | None = None) -> pd.DataFrame:
     """Load the Kaggle S&P 500 CSV (2013-02-08 to 2018-02-07)."""
     df = pd.read_csv(KAGGLE_CSV, parse_dates=["date"])
@@ -37,15 +42,24 @@ def load_kaggle(tickers: list[str] | None = None) -> pd.DataFrame:
 
 def fetch_yfinance(tickers: list[str], start: str = "2018-02-08", end: str | None = None,
                     cache: bool = True) -> pd.DataFrame:
-    """Download daily OHLCV for tickers from yfinance, caching each ticker as a CSV."""
+    """Download daily OHLCV for tickers from yfinance, caching each ticker as a CSV.
+
+    A cached file is only reused if it already reaches the requested end date (within
+    a long weekend's slack); otherwise it's refetched. Without this check, a cache
+    written once would silently serve the same stale end date forever -- the opposite
+    of what an app showing "latest data" needs.
+    """
     import yfinance as yf
 
+    target_end = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
     frames = []
     YFINANCE_DIR.mkdir(parents=True, exist_ok=True)
     for ticker in tickers:
         cache_path = YFINANCE_DIR / f"{ticker}.csv"
-        if cache and cache_path.exists():
-            frame = pd.read_csv(cache_path, parse_dates=["date"])
+        cached = pd.read_csv(cache_path, parse_dates=["date"]) if cache_path.exists() else None
+        fresh_enough = cached is not None and cached["date"].max() >= target_end - pd.Timedelta(days=4)
+        if cache and fresh_enough:
+            frame = cached
         else:
             raw = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
             if raw.empty:
