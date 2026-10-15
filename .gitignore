@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# large/raw data: fetched by scripts, not committed
+data/raw/
+data/processed/
+results/*/
+!results/.gitkeep
+
+.DS_Store
