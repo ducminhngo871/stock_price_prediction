@@ -66,3 +66,15 @@ def test_replay_slider_controls_visible_window():
     at.slider(key="replay_day").set_value(half).run()
     assert not at.exception
     assert at.slider(key="replay_day").value == half
+
+
+def test_forecast_future_populates_future_run():
+    at = fresh()
+    at.selectbox(key="horizon_label").set_value("1 month").run()
+    at.button(key="future_button").click().run()
+    assert not at.exception
+    fr = at.session_state["future_run"]
+    assert fr is not None
+    assert len(fr["dates"]) == 21  # "1 month" -> 21 trading days
+    assert set(fr["forecasts"]) == {"naive", "linear_regression", "random_forest", "arima"}
+    assert fr["dates"][0] > fr["last_date"]

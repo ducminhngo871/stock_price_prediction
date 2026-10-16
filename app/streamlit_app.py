@@ -15,6 +15,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from stock_price_prediction.data import available_tickers  # noqa: E402
+from stock_price_prediction.future import all_future_forecasts  # noqa: E402
 from stock_price_prediction.ideal import IDEAL  # noqa: E402
 from stock_price_prediction.pipeline import run_forecast  # noqa: E402
 from stock_price_prediction.plotting import MODEL_COLORS, MODEL_LABELS  # noqa: E402
@@ -22,6 +23,7 @@ from stock_price_prediction.specs import SPECS, recipe_name, run_id, spec_check 
 
 LOT = "SPX-0001"
 MODEL_NAMES = ["naive", "linear_regression", "random_forest", "arima"]
+HORIZON_OPTIONS = {"1 month": 21, "3 months": 63, "6 months": 126, "1 year": 252, "2 years": 504}
 
 st.set_page_config(page_title="Stock Price Forecasting", page_icon="\U0001F4C8", layout="wide")
 st.html("""<style>
@@ -39,6 +41,7 @@ for key, value in DEFAULTS.items():
     st.session_state[key] = st.session_state[key]
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("last_run", None)
+st.session_state.setdefault("future_run", None)
 
 
 def ideal_settings() -> dict:
@@ -76,11 +79,22 @@ with st.sidebar:
               if is_ideal else "Run this config and the recommended one side by side"),
     )
 
+    st.markdown("### Future forecast")
+    st.caption("Projects past the latest known price -- a different exercise from the backtest above: "
+              "there's no real outcome to score this against, only a projection (see the FUTURE tab).")
+    horizon_label = st.selectbox("Horizon", list(HORIZON_OPTIONS), index=3, key="horizon_label")
+    forecast_future = st.button("\U0001F52E Forecast future", key="future_button", width="stretch")
+
 
 # ---------------------------------------------------------------- simulation
 @st.cache_data(show_spinner="Fetching prices and fitting models...", max_entries=32, ttl=3600)
 def simulate(ticker: str, end: str | None, test_size: float) -> dict:
     return run_forecast(ticker, end=end, test_size=test_size)
+
+
+@st.cache_data(show_spinner="Fetching prices and fitting models on full history...", max_entries=32, ttl=3600)
+def simulate_future(ticker: str, end: str | None, horizon: int) -> dict:
+    return all_future_forecasts(ticker, end=end, horizon=horizon)
 
 
 def current_config() -> dict:
@@ -127,11 +141,15 @@ if run or split:
         runs.append(process_run(ideal_config(cfg_snapshot), "RECOMMENDED"))
     st.session_state["last_run"] = {"runs": runs, "comparison": split}
 
+if forecast_future:
+    end = None if use_latest else str(end_date)
+    st.session_state["future_run"] = simulate_future(ticker, end, HORIZON_OPTIONS[horizon_label])
+
 hist = pd.DataFrame(st.session_state["history"])
 
 # ---------------------------------------------------------------- page
 st.markdown("### Stock price forecasting")
-tab_run, tab_hist, tab_about = st.tabs(["RUN", "RUN HISTORY", "ABOUT"])
+tab_run, tab_future, tab_hist, tab_about = st.tabs(["RUN", "FUTURE", "RUN HISTORY", "ABOUT"])
 
 with tab_run:
     last = st.session_state["last_run"]
@@ -208,6 +226,72 @@ with tab_run:
             st.download_button("Run history (CSV)", hist.to_csv(index=False) if not hist.empty else "",
                                f"{LOT}_history.csv", key="export_hist")
 
+with tab_future:
+    fr = st.session_state["future_run"]
+    if fr is None:
+        st.info("Pick a ticker and horizon in the sidebar, then **\U0001F52E Forecast future**. Unlike RUN, "
+                "this projects past the latest known price into dates that haven't happened yet -- there's "
+                "no real outcome to score it against, only a projection.")
+    else:
+        ft = fr["ticker"]
+        st.markdown(f"#### {ft}: {len(fr['dates'])}-trading-day forecast past {fr['last_date']:%Y-%m-%d} "
+                   f"(last close ${fr['last_close']:.2f})")
+
+        tail = fr["prices"].tail(252)[["date", "close"]].rename(columns={"close": "price"})
+        tail["series"] = "Actual (history)"
+        layers = [alt.Chart(tail).mark_line(color="#e8e8e8", size=1.6).encode(
+            x=alt.X("date:T", title=None), y=alt.Y("price:Q", title="Close ($)", scale=alt.Scale(zero=False)))]
+
+        for name in MODEL_NAMES:
+            f = fr["forecasts"][name]
+            color = MODEL_COLORS[name]
+            proj = pd.DataFrame({"date": fr["dates"], "price": f["point"]})
+            layers.append(alt.Chart(proj).mark_line(color=color, strokeDash=[5, 3], size=1.6).encode(
+                x="date:T", y="price:Q",
+                tooltip=["date:T", alt.Tooltip("price:Q", format=".2f")]))
+            if "lo" in f:
+                band = pd.DataFrame({"date": fr["dates"], "lo": f["lo"], "hi": f["hi"]})
+                layers.insert(0, alt.Chart(band).mark_area(color=color, opacity=0.08).encode(
+                    x="date:T", y="lo:Q", y2="hi:Q"))
+
+        chart = (alt.layer(*layers).properties(height=380).configure(background="transparent")
+                .configure_axis(gridColor="#243140", labelColor="#7b8a99", titleColor="#7b8a99"))
+        st.altair_chart(chart, width="stretch")
+        legend = "  ".join(f"<span style='color:{MODEL_COLORS[m]}'>&#9679;</span> {MODEL_LABELS[m]}"
+                           for m in MODEL_NAMES)
+        st.markdown(f"<span style='color:#e8e8e8'>&#9679;</span> Actual (history)  {legend}", unsafe_allow_html=True)
+        st.caption("Shaded bands (naive, ARIMA) are 95% uncertainty ranges, not alternate point forecasts. "
+                  "Random forest and Ridge have no native uncertainty estimate here.")
+
+        rows = []
+        for name in MODEL_NAMES:
+            f = fr["forecasts"][name]
+            band = f"${f['lo'][-1]:.2f} - ${f['hi'][-1]:.2f}" if "lo" in f else "n/a"
+            rows.append({"Model": MODEL_LABELS[name], f"Price in {len(fr['dates'])} trading days": round(float(f["point"][-1]), 2),
+                        "95% range": band})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+        st.warning(
+            "**This is an extrapolation, not a prediction with a known error rate.** There is no actual "
+            "price to compare against yet, so none of the RUN tab's metrics or specs apply here. Random "
+            "forest and Ridge are forecast recursively (each day's prediction feeds the next day's "
+            "features), which compounds error with every step -- random forest in particular is known to "
+            "flatten out fast past its training range (see ABOUT). Naive's and ARIMA's bands widen with "
+            "the horizon for a reason: a 1-year-ahead point forecast for a near-random-walk stock means "
+            "very little without one.",
+            icon="⚠️",
+        )
+
+        with st.popover("⬇ Export"):
+            fdf = pd.DataFrame({"date": fr["dates"]})
+            for name in MODEL_NAMES:
+                f = fr["forecasts"][name]
+                fdf[f"{name}_point"] = f["point"]
+                if "lo" in f:
+                    fdf[f"{name}_lo"], fdf[f"{name}_hi"] = f["lo"], f["hi"]
+            st.download_button("Future forecast (CSV)", fdf.to_csv(index=False),
+                               f"{ft}_future_forecast.csv", key="export_future_csv")
+
 COLOR = alt.Scale(domain=["PASS", "FAIL"], range=["#3ddc84", "#ff5a4e"])
 
 
@@ -252,8 +336,8 @@ correlated above 0.99 -- Ridge's regularization fixes that); random forest on th
 rolling one-step-ahead forecast on the close series directly.
 
 **Metrics.** RMSE/MAE/MAPE measure price-level error. Directional accuracy is whether the model got tomorrow's
-up/down right -- a coin flip is 50%, and the naive model is *always* exactly 0% here by construction (it only
-ever predicts "no change", so it never has a direction to be right or wrong about).
+up/down right -- a coin flip is 50%, and the naive model sits at ~0% by construction (it only ever predicts
+"no change", so the rare flat trading day aside, it never has a direction to be right or wrong about).
 
 **Specs.** {SPECS['beats_naive_rmse']['text']}. {SPECS['directional_accuracy']['text']}. Expect most models to
 FAIL most of the time -- that's the project's central, honest finding: liquid stock prices are close enough to
@@ -265,4 +349,13 @@ reliable directional edge either.
 **Known limitation.** Random forest cannot extrapolate past the highest price value it saw during training --
 visible directly in the test-period chart above as a flat line once the actual price breaks into new territory.
 This is a structural property of tree ensembles on trending series, not a tuning problem.
+
+**The FUTURE tab** fits every model on *all* available history and projects past today, instead of holding
+out a known test period. There's no real outcome to score these against, so no RMSE or spec applies there --
+only the projection and, where available, an uncertainty band. Naive's band comes from historical volatility
+scaled by sqrt(time), the standard random-walk result; ARIMA's comes from its own fitted model. Notice ARIMA's
+band is usually *narrower* than naive's despite ARIMA backtesting worse (see Findings) -- a model's own
+parametric confidence interval isn't automatically more trustworthy than a simple empirical one. Random
+forest and Ridge have no native uncertainty estimate and are forecast recursively (each day's prediction
+feeds the next day's lag features), which compounds error with every step.
 """)

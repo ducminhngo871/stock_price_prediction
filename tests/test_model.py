@@ -45,12 +45,14 @@ def test_ridge_predictions_stay_in_plausible_range():
     assert preds.max() < hi + span, "predictions rise far above the actual test range"
 
 
-def test_naive_forecast_has_zero_directional_accuracy_by_construction():
+def test_naive_forecast_has_near_zero_directional_accuracy_by_construction():
+    """Exactly 0% except on a flat trading day (no price change), where direction_true is
+    also 0 and happens to match naive's always-0 prediction -- rare, but not impossible."""
     featured = _featured()
     _, test_df = time_split(featured, test_size=0.2)
     preds = naive_forecast(test_df)
     metrics = evaluate(test_df["target"].to_numpy(), preds, test_df["lag_1"].to_numpy())
-    assert metrics["directional_accuracy"] == 0.0
+    assert metrics["directional_accuracy"] < 0.01
 
 
 def test_run_all_models_naive_beats_or_matches_ml_models_on_rmse():

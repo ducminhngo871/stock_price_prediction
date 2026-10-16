@@ -22,9 +22,11 @@ def naive_forecast(test_df: pd.DataFrame) -> np.ndarray:
     """Predict tomorrow's close as today's close (the random-walk baseline).
 
     Because this prediction literally equals y_prev, its directional accuracy
-    (see `evaluate`) is always exactly 0%: it never predicts a direction at
-    all. That's not a bug, it's what "no change" means -- report it alongside
-    the other models' directional accuracy with that in mind.
+    (see `evaluate`) is 0% except on the rare flat trading day (no price
+    change, where "no change" happens to be the right call): it never
+    deliberately predicts a direction at all. That's not a bug, it's what
+    "no change" means -- report it alongside the other models' directional
+    accuracy with that in mind.
     """
     return test_df["lag_1"].to_numpy()
 

@@ -40,12 +40,13 @@ src/stock_price_prediction/
   features.py   # lag/rolling features, next-day target, chronological train/test split
   model.py      # naive, Ridge, random forest, ARIMA + evaluation (RMSE/MAE/MAPE/directional accuracy)
   pipeline.py   # run_forecast: data -> features -> split -> all models, shared by the script and the app
-  plotting.py   # static (matplotlib) plots used by scripts/run_model.py
+  future.py     # all_future_forecasts: fit on all history, project past the latest known price
+  plotting.py   # static (matplotlib) plots used by scripts/run_model.py and run_future.py
   specs.py       # app vocabulary: run IDs, recipe names, pass/fail specs
   ideal.py      # recommended demo config + reasoning
-data/raw/       # not committed; kaggle_sandp500/ + yfinance/ (fetched, cached)
+data/raw/       # kaggle_sandp500/ (committed) + yfinance/ (fetched, cached, gitignored)
 notebooks/      # exploration
-scripts/        # run_model.py: reproducible end-to-end data+model pipeline
+scripts/        # run_model.py (backtest) and run_future.py (future forecast)
 app/            # streamlit_app.py: interactive ticker/model picker, run/compare, run history
 .streamlit/     # dark theme
 tests/          # data integrity, model sanity and app smoke tests
@@ -68,22 +69,38 @@ Run with `PYTHONPATH=src python scripts/run_model.py AAPL` (any ticker, optional
 Saves to `results/price_forecast_<TICKER>/`: `price_history.png`, `predictions.png`,
 `model_comparison.png`, `predictions.csv`, `metrics.json`.
 
-### Findings (AAPL and AMZN, 2013-2024)
+A separate script, `PYTHONPATH=src python scripts/run_future.py AAPL 252`, fits the same four
+models on *all* available history and projects `252` trading days (~1 year; any horizon works)
+past the latest known price. This is a different exercise from the backtest above: there is no
+real future price to score against, so there are no RMSE/spec numbers here, only the projection
+and, where possible (naive, ARIMA), an honest uncertainty band. Saves to
+`results/future_forecast_<TICKER>/`: `forecast.png`, `forecast.csv`, `settings.json`.
 
-* **Naive is nearly unbeatable on price-level RMSE.** Ridge and ARIMA land within ~1-2% of
-  naive's RMSE; none of the models meaningfully beat "tomorrow equals today." This is the
-  expected signature of a near-random-walk series, not a failure to tune the models harder.
-* **Random forest is the worst model, consistently.** Its RMSE is 4-5x naive's. The reason is
-  visible directly in `predictions.png`: it cannot extrapolate past the highest price value it
-  saw during training (e.g. AAPL: capped at ~$153 while the actual test-period price reached
-  $198), a structural limitation of tree ensembles on trending, non-stationary series.
-* **Directional accuracy sits at ~50% for every model** (a coin flip), and is *exactly* 0% for
-  naive by construction -- it only ever predicts "no change," so it never has a direction to be
-  right or wrong about. None of the feature-based models find a genuine edge on up/down direction
-  either.
+### Findings (AAPL, 2013-2024)
+
+* **Naive is nearly unbeatable on price-level RMSE.** Ridge lands within ~0.3% of naive's RMSE;
+  neither meaningfully beats "tomorrow equals today." This is the expected signature of a
+  near-random-walk series, not a failure to tune the models harder.
+* **ARIMA(5,1,0) is measurably worse than naive** (RMSE ~46% higher) -- its AR terms add a small
+  amount of extra noise per step relative to a pure random walk, which is itself close to optimal
+  for a series this close to efficient. It isn't "tied with naive," it loses to it.
+* **Random forest is the worst model by far.** Its RMSE is ~15x naive's. The reason is visible
+  directly in `predictions.png`: it cannot extrapolate past the highest price value it saw during
+  training, a structural limitation of tree ensembles on trending, non-stationary series.
+* **Directional accuracy sits at ~50% for every model** (a coin flip), and is ~0% for naive by
+  construction -- it only ever predicts "no change," so (the rare flat trading day aside) it
+  never has a direction to be right or wrong about. None of the feature-based models find a
+  genuine edge on up/down direction either.
 * **Takeaway:** this is an honest negative result, consistent with the efficient-market
   hypothesis, not a bug to chase. Price-level forecasts track the market well enough to *look*
   good in a plot (see `predictions.png`), but that's naive's doing, not genuine predictive skill.
+
+**A real bug was found and fixed here**: `features.py` originally applied an extra `.shift(1)` to
+every feature, so `lag_1` was yesterday's close rather than today's -- every "next-day" prediction
+was actually a stale two-day-ahead one, and the single most informative input (the most recent
+known price) was never used at all. Fixing it lowered naive's RMSE noticeably and is what revealed
+ARIMA's real relative performance (previously masked by naive/Ridge being artificially handicapped
+by the same bug). See `future.py`'s module docstring and `src/stock_price_prediction/features.py`.
 
 ## The app
 
@@ -98,6 +115,13 @@ Saves to `results/price_forecast_<TICKER>/`: `price_history.png`, `predictions.p
   PASS/FAIL spec column; CSV/JSON export.
 * **⇄ Compare with recommended** runs your config and the recommended one side by side with an
   explicit RMSE-difference table. Disabled when they already match.
+* **FUTURE:** fits every model on *all* available history and projects 1 month to 2 years past
+  the latest known price (**🔮 Forecast future**) -- a genuinely different exercise from RUN, since
+  there's no real outcome to score a true future prediction against. Naive's and ARIMA's bands
+  widen with the horizon (sqrt-of-time for naive, the model's own fit for ARIMA); random forest and
+  Ridge have no native uncertainty estimate and are forecast recursively (each day's prediction
+  feeds the next day's features), so watch random forest flatten out within the first few weeks --
+  see Findings and `src/stock_price_prediction/future.py`.
 * **RUN HISTORY:** every (run, model) result gets an ID (`SPX-0001-R03`), logged with PASS/FAIL and
   a trend chart. Expect it to fill up with FAIL -- see Findings.
 * **ABOUT:** the same findings/limitations as this README, in-app.
@@ -133,8 +157,8 @@ The app needs no API keys or secrets; the Kaggle CSV it depends on is committed 
 
 ## Status
 
-Data pipeline, forecasting models and the Streamlit app are built and validated (see Findings
-above; the app was driven end-to-end with Playwright and its logic covered by
-`streamlit.testing.v1.AppTest` in `tests/test_app.py`). Not yet done: a notebook walkthrough, a
-research report, a user guide, and a developer guide; extending beyond next-day-close (e.g.
-multi-day horizons, other targets like returns/volatility).
+Data pipeline, next-day backtest models, the future-forecast path and the Streamlit app are built
+and validated (see Findings above; the app was driven end-to-end with Playwright and its logic
+covered by `streamlit.testing.v1.AppTest` in `tests/test_app.py`). Not yet done: a notebook
+walkthrough, a research report, a user guide, and a developer guide; targets other than next-day
+close (e.g. returns, volatility).

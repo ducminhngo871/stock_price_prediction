@@ -59,6 +59,35 @@ def plot_predictions(dates, y_true, predictions: dict, ticker: str, save_path=No
     return fig
 
 
+def plot_future_forecast(history: pd.DataFrame, result: dict, ticker: str, history_days: int = 252,
+                         save_path=None):
+    """Recent history plus every model's forward projection, with bands where available.
+
+    There is no "actual" line in the projected region -- by definition, nobody knows it yet.
+    """
+    tail = history.tail(history_days)
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    ax.plot(tail["date"], tail["close"], color="black", linewidth=1.3, label="Actual (history)")
+
+    for name, f in result["forecasts"].items():
+        color = MODEL_COLORS.get(name, "gray")
+        ax.plot(result["dates"], f["point"], color=color, linewidth=1.3, linestyle="--",
+                label=MODEL_LABELS.get(name, name))
+        if "lo" in f:
+            ax.fill_between(result["dates"], f["lo"], f["hi"], color=color, alpha=0.08)
+
+    ax.axvline(result["last_date"], color="#7b8a99", linestyle=":", linewidth=1)
+    ax.set(xlabel="Date", ylabel="Close price ($)",
+          title=f"{ticker}: {len(result['dates'])}-trading-day forecast past {result['last_date']:%Y-%m-%d}")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        plt.close(fig)
+    return fig
+
+
 def plot_metrics_comparison(metrics: dict, ticker: str, save_path=None):
     """Bar charts of RMSE and directional accuracy across models."""
     names = list(metrics.keys())

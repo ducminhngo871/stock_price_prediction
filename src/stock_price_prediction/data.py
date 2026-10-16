@@ -88,7 +88,10 @@ def adjust_kaggle_for_late_splits(df: pd.DataFrame, ticker: str) -> pd.DataFrame
     import yfinance as yf
 
     splits = yf.Ticker(ticker).splits
-    if splits.empty:
+    # yfinance's metadata endpoint occasionally returns None on a transient failure
+    # instead of raising or returning an empty Series; treat that the same as "no splits"
+    # rather than crashing the whole forecast over a flaky network call.
+    if splits is None or splits.empty:
         return df
     splits = splits.copy()
     splits.index = pd.to_datetime(splits.index).tz_localize(None)
