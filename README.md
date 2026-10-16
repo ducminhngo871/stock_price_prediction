@@ -132,10 +132,16 @@ and directional accuracy must clear 55%. Both usually FAIL, which is the point (
 ## Setup
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate
+python3.14 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pytest
 ```
+
+Dependencies are pinned to exact versions (not `>=` ranges): Streamlit Community Cloud installs
+fresh from `requirements.txt` on every deploy, and an open-ended pin can silently resolve to a
+different, untested release on any given day. Tested and verified (full test suite, including
+`streamlit.testing.v1.AppTest`) on both 3.12 and 3.14; `runtime.txt` pins the deployed app to
+whichever one actually matches what you're deploying to.
 
 `data/raw/kaggle_sandp500/all_stocks_5yr.csv` (the Kaggle file, CC0-1.0 licensed, ~28 MB) is
 committed to the repo so a fresh checkout -- including a Streamlit Community Cloud deploy --
@@ -152,7 +158,8 @@ The app needs no API keys or secrets; the Kaggle CSV it depends on is committed 
    that owns the fork.
 3. **Create app** -> paste the GitHub URL of `app/streamlit_app.py` on your fork's `main` branch
    (e.g. `https://github.com/<you>/stock_price_prediction/blob/main/app/streamlit_app.py`).
-4. Keep Python 3.12 in Advanced settings. No secrets required.
+4. `runtime.txt` pins the Python version; no need to set it manually in Advanced settings. No
+   secrets required.
 5. Deploy. Pushes to `main` update the deployed app automatically.
 
 ## Status
