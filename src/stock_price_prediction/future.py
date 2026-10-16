@@ -56,7 +56,15 @@ def _latest_feature_row(history: pd.DataFrame) -> pd.DataFrame:
 
 
 def recursive_forecast(model, history: pd.DataFrame, horizon: int) -> np.ndarray:
-    """Step forward one day at a time, feeding each prediction back in as the next day's lag_1."""
+    """Step forward one day at a time, feeding each prediction back in as the next day's lag_1.
+
+    If `model` has an n_jobs attribute (random forest), force it to 1 here: predicting one row
+    at a time in a loop, joblib's parallel-dispatch setup cost is paid on every single call and
+    dominates the actual (tiny) amount of work -- measured ~2x faster for a 2-year horizon with
+    n_jobs=1 than the -1 used for fitting, where parallelizing across many rows genuinely helps.
+    """
+    if hasattr(model, "n_jobs"):
+        model.n_jobs = 1
     dates = future_business_dates(history["date"].iloc[-1], horizon)
     extended = history[["date", "close", "volume"]].copy()
     preds = np.empty(horizon)
@@ -88,11 +96,15 @@ def arima_future_forecast(history: pd.DataFrame, horizon: int, order=(5, 1, 0)) 
     return {"point": np.asarray(result.predicted_mean), "lo": ci[:, 0], "hi": ci[:, 1]}
 
 
-def all_future_forecasts(ticker: str, end: str | None = None, horizon: int = 252) -> dict:
-    """Fit every model on the full history for `ticker` and project `horizon` trading days forward."""
-    from stock_price_prediction.data import load_combined
+def all_future_forecasts(ticker: str, end: str | None = None, horizon: int = 252,
+                         years: int | None = None) -> dict:
+    """Fit every model on `ticker`'s history and project `horizon` trading days forward.
 
-    prices = load_combined([ticker], end=end)
+    years=None loads full history (2013-present); the app passes a small years value for
+    a much faster trailing window instead (see data.load_recent)."""
+    from stock_price_prediction.data import load_combined, load_recent
+
+    prices = load_recent([ticker], years=years, end=end) if years else load_combined([ticker], end=end)
     featured = build_features(prices)  # drops only the final row, whose target (tomorrow) isn't known yet
 
     ridge = fit_linear_regression(featured)

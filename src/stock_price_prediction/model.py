@@ -42,7 +42,13 @@ def fit_linear_regression(train_df: pd.DataFrame, alpha: float = 1.0) -> Ridge:
     return model
 
 
-def fit_random_forest(train_df: pd.DataFrame, n_estimators: int = 300) -> RandomForestRegressor:
+def fit_random_forest(train_df: pd.DataFrame, n_estimators: int = 100) -> RandomForestRegressor:
+    """100 trees, not 300: verified to give essentially identical RMSE/directional accuracy on
+    backtests (expected -- random forest's inability to extrapolate past its training range is
+    structural, not a function of tree count), while being 3x cheaper per prediction. That matters
+    here specifically because recursive_forecast calls .predict() hundreds of times in a loop,
+    where this cost is paid on every single step.
+    """
     model = RandomForestRegressor(n_estimators=n_estimators, max_depth=6, random_state=SEED, n_jobs=-1)
     model.fit(train_df[FEATURE_COLUMNS], train_df["target"])
     return model

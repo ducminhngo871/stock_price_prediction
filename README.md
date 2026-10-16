@@ -105,29 +105,42 @@ by the same bug). See `future.py`'s module docstring and `src/stock_price_predic
 ## The app
 
 `streamlit run app/streamlit_app.py` (from the project root, so `.streamlit/config.toml` applies).
+The in-app **ABOUT** tab has a full step-by-step walkthrough; the short version:
 
 * **Sidebar config:** ticker (any of the 505 in the Kaggle dataset), test-period size, an
   **⭐ Load recommended** button (AAPL, 20% test, see Findings above for why), and an **Advanced**
   panel to pin an "as of" date instead of always using the latest available data.
-* **▶ Run forecast** fits all four models and shows: the full price history (interactive
+* **▶ Run forecast** fits all four models and shows: the recent price history (interactive
   zoom/pan/hover, train/test split marked); a scrubbable test-period chart (the `Day` slider
-  reveals actual vs. predicted day by day, defaulting to the full period); a metrics table with a
-  PASS/FAIL spec column; CSV/JSON export.
+  reveals actual vs. predicted day by day, defaulting to the full period); a metrics table with
+  hoverable explanations for each column and the best (lowest-error) model highlighted; CSV/JSON
+  export.
 * **⇄ Compare with recommended** runs your config and the recommended one side by side with an
   explicit RMSE-difference table. Disabled when they already match.
-* **FUTURE:** fits every model on *all* available history and projects 1 month to 2 years past
+* **FUTURE:** fits every model on recent history and projects 1 month to 2 years past
   the latest known price (**🔮 Forecast future**) -- a genuinely different exercise from RUN, since
   there's no real outcome to score a true future prediction against. Naive's and ARIMA's bands
   widen with the horizon (sqrt-of-time for naive, the model's own fit for ARIMA); random forest and
   Ridge have no native uncertainty estimate and are forecast recursively (each day's prediction
   feeds the next day's features), so watch random forest flatten out within the first few weeks --
   see Findings and `src/stock_price_prediction/future.py`.
-* **RUN HISTORY:** every (run, model) result gets an ID (`SPX-0001-R03`), logged with PASS/FAIL and
-  a trend chart. Expect it to fill up with FAIL -- see Findings.
-* **ABOUT:** the same findings/limitations as this README, in-app.
+* **RUN HISTORY:** every (run, model) result gets an ID (`SPX-0001-R03`) and a per-model trend
+  chart, colored by whether it came from your own config or the recommended one.
+* **ABOUT:** a full usage walkthrough plus the same findings/limitations as this README.
 
-Specs (`src/stock_price_prediction/specs.py`) are deliberately hard to pass: RMSE must beat naive,
-and directional accuracy must clear 55%. Both usually FAIL, which is the point (see Findings).
+### Why it's fast
+
+The app fits on the trailing 5 years of daily prices (`HISTORY_YEARS` in `streamlit_app.py`), not
+the full 2013-present history: yfinance alone covers that window, so it skips `load_combined`'s
+slowest parts entirely (parsing the 619k-row Kaggle file, a second network call per ticker for
+split metadata) via `data.load_recent`. The scripts that regenerate this README's figures still
+use the full history, since that's a one-off, not an interactive wait. Two more fixes target the
+FUTURE tab specifically, where the recursive forecast calls `.predict()` hundreds of times in a
+loop: random forest's tree count dropped from 300 to 100 (verified to leave RMSE and directional
+accuracy unchanged -- its inability to extrapolate is structural, not a function of tree count),
+and its `n_jobs` is forced to 1 for that loop, since joblib's parallel-dispatch overhead otherwise
+dominates a prediction this small. Together, a 2-year FUTURE forecast went from several seconds to
+about 2.
 
 ## Setup
 

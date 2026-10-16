@@ -19,11 +19,26 @@ from stock_price_prediction.future import all_future_forecasts  # noqa: E402
 from stock_price_prediction.ideal import IDEAL  # noqa: E402
 from stock_price_prediction.pipeline import run_forecast  # noqa: E402
 from stock_price_prediction.plotting import MODEL_COLORS, MODEL_LABELS  # noqa: E402
-from stock_price_prediction.specs import SPECS, recipe_name, run_id, spec_check  # noqa: E402
+from stock_price_prediction.specs import recipe_name, run_id  # noqa: E402
 
 LOT = "SPX-0001"
 MODEL_NAMES = ["naive", "linear_regression", "random_forest", "arima"]
 HORIZON_OPTIONS = {"1 month": 21, "3 months": 63, "6 months": 126, "1 year": 252, "2 years": 504}
+# A trailing window, not full 2013-present history: yfinance alone covers it (no slow Kaggle
+# parse or stitching needed, see data.load_recent) and every model fits several times faster.
+HISTORY_YEARS = 5
+HISTORY_START_YEAR = str(pd.Timestamp.now().year - HISTORY_YEARS)
+
+METRIC_HELP = {
+    "RMSE ($)": "Root-mean-squared error: typical miss size in dollars, penalizing big misses "
+               "more than small ones. Lower is better.",
+    "MAE ($)": "Mean absolute error: typical miss size in dollars, each day weighted equally. "
+              "Lower is better.",
+    "MAPE (%)": "Mean absolute percentage error: typical miss size as a % of the price, so it's "
+               "comparable across tickers at very different price levels. Lower is better.",
+    "Directional acc. (%)": "How often the model got tomorrow's up/down right. 50% is a coin "
+                            "flip; the naive model sits at ~0% by construction (see ABOUT).",
+}
 
 st.set_page_config(page_title="Stock Price Forecasting", page_icon="\U0001F4C8", layout="wide")
 st.html("""<style>
@@ -34,7 +49,12 @@ st.html("""<style>
 </style>""")
 
 # ---------------------------------------------------------------- state
-ALL_TICKERS = available_tickers()
+@st.cache_data
+def cached_tickers() -> list[str]:
+    return available_tickers()
+
+
+ALL_TICKERS = cached_tickers()
 DEFAULTS = {"ticker": "AAPL", "test_size_pct": 20, "use_latest": True, "end_date": None}
 for key, value in DEFAULTS.items():
     st.session_state.setdefault(key, value)
@@ -67,10 +87,12 @@ with st.sidebar:
         st.caption("Models: naive, Ridge regression, random forest, ARIMA(5,1,0) -- all four run together.")
 
     is_ideal = all(st.session_state[k] == v for k, v in ideal_settings().items())
-    recipe = recipe_name(ticker, "2013", "latest" if use_latest else str(end_date), test_size_pct / 100)
+    recipe = recipe_name(ticker, HISTORY_START_YEAR, "latest" if use_latest else str(end_date),
+                         test_size_pct / 100)
     st.markdown(f'<div class="recipe">{"⭐ recommended · " if is_ideal else ""}{recipe}</div>',
                 unsafe_allow_html=True)
-    st.caption(f"Specs: {SPECS['beats_naive_rmse']['text']}; {SPECS['directional_accuracy']['text']}")
+    st.caption(f"Uses the last {HISTORY_YEARS} years of daily prices, compared against a naive "
+              "\"tomorrow = today\" baseline. See ABOUT for what the metrics mean.")
     run = st.button("▶ Run forecast", key="run_button", type="primary", width="stretch")
     split = st.button(
         "✓ Config matches recommended" if is_ideal else "⇄ Compare with recommended",
@@ -89,12 +111,12 @@ with st.sidebar:
 # ---------------------------------------------------------------- simulation
 @st.cache_data(show_spinner="Fetching prices and fitting models...", max_entries=32, ttl=3600)
 def simulate(ticker: str, end: str | None, test_size: float) -> dict:
-    return run_forecast(ticker, end=end, test_size=test_size)
+    return run_forecast(ticker, end=end, test_size=test_size, years=HISTORY_YEARS)
 
 
-@st.cache_data(show_spinner="Fetching prices and fitting models on full history...", max_entries=32, ttl=3600)
+@st.cache_data(show_spinner="Fetching prices and fitting models...", max_entries=32, ttl=3600)
 def simulate_future(ticker: str, end: str | None, horizon: int) -> dict:
-    return all_future_forecasts(ticker, end=end, horizon=horizon)
+    return all_future_forecasts(ticker, end=end, horizon=horizon, years=HISTORY_YEARS)
 
 
 def current_config() -> dict:
@@ -109,17 +131,15 @@ def ideal_config(base: dict | None = None) -> dict:
 
 
 def process_run(cfg: dict, label: str) -> dict:
-    """Simulate, spec-check every model, log one history row per model; return the display payload."""
+    """Simulate, log one history row per model, return the display payload."""
     result = simulate(**cfg)
-    naive_metrics = result["metrics"]["naive"]
     for model_name in MODEL_NAMES:
         m = result["metrics"][model_name]
-        status = spec_check(m, naive_metrics)
         st.session_state["history"].append({
             "run": run_id(LOT, len(st.session_state["history"]) + 1),
-            "ticker": cfg["ticker"], "recipe": recipe_name(cfg["ticker"], "2013", cfg["end"] or "latest",
-                                                            cfg["test_size"]),
-            "label": label, "model": model_name, "result": status,
+            "ticker": cfg["ticker"], "recipe": recipe_name(cfg["ticker"], HISTORY_START_YEAR,
+                                                           cfg["end"] or "latest", cfg["test_size"]),
+            "label": label, "model": model_name,
             "rmse": m["rmse"], "mae": m["mae"], "mape": m["mape"], "dir_acc": m["directional_accuracy"],
         })
     return {"cfg": cfg, "label": label, "result": result}
@@ -161,7 +181,8 @@ with tab_run:
     last = st.session_state["last_run"]
     if last is None:
         st.info("Pick a ticker in the sidebar (or press **⭐ Load recommended**), then **▶ Run forecast**. "
-                "**⇄ Compare with recommended** runs your config and the recommended one side by side.")
+                "**⇄ Compare with recommended** runs your config and the recommended one side by side. "
+                "See the **ABOUT** tab for a full walkthrough.")
     else:
         main_run = last["runs"][0]
         prices, train_df, test_df = main_run["result"]["prices"], main_run["result"]["train"], main_run["result"]["test"]
@@ -202,19 +223,22 @@ with tab_run:
         st.altair_chart(pred_chart, width="stretch")
 
         st.markdown("#### Model metrics (full test period)")
+        st.caption("RMSE, MAE and MAPE measure price-level error -- lower is better. Directional "
+                  "accuracy is how often the model got tomorrow's up/down right -- 50% is a coin "
+                  "flip. Hover a column header for details; the lowest-error model is highlighted.")
         rows = []
-        naive_m = main_run["result"]["metrics"]["naive"]
         for m in MODEL_NAMES:
             met = main_run["result"]["metrics"][m]
             rows.append({"Model": MODEL_LABELS[m], "RMSE ($)": round(met["rmse"], 3),
                         "MAE ($)": round(met["mae"], 3), "MAPE (%)": round(met["mape"], 2),
-                        "Directional acc. (%)": round(met["directional_accuracy"] * 100, 1),
-                        "Spec result": spec_check(met, naive_m)})
+                        "Directional acc. (%)": round(met["directional_accuracy"] * 100, 1)})
         metrics_df = pd.DataFrame(rows)
         styled = metrics_df.style.format({
             "RMSE ($)": "{:.3f}", "MAE ($)": "{:.3f}", "MAPE (%)": "{:.2f}", "Directional acc. (%)": "{:.1f}",
-        }).map(lambda v: {"PASS": "color:#3ddc84", "FAIL": "color:#ff5a4e"}.get(v, ""), subset=["Spec result"])
-        st.dataframe(styled, hide_index=True, width="stretch")
+        }).highlight_min(subset=["RMSE ($)", "MAE ($)", "MAPE (%)"], color="#1c3a2e", props="font-weight:600")
+        st.dataframe(styled, hide_index=True, width="stretch",
+                    column_config={col: st.column_config.Column(help=text)
+                                   for col, text in METRIC_HELP.items()})
 
         if last.get("comparison"):
             st.markdown("#### Your config vs. recommended")
@@ -279,7 +303,7 @@ with tab_future:
 
         st.warning(
             "**This is an extrapolation, not a prediction with a known error rate.** There is no actual "
-            "price to compare against yet, so none of the RUN tab's metrics or specs apply here. Random "
+            "price to compare against yet, so none of the RUN tab's error metrics apply here. Random "
             "forest and Ridge are forecast recursively (each day's prediction feeds the next day's "
             "features), which compounds error with every step -- random forest in particular is known to "
             "flatten out fast past its training range (see ABOUT). Naive's and ARIMA's bands widen with "
@@ -298,7 +322,7 @@ with tab_future:
             st.download_button("Future forecast (CSV)", fdf.to_csv(index=False),
                                f"{ft}_future_forecast.csv", key="export_future_csv")
 
-COLOR = alt.Scale(domain=["PASS", "FAIL"], range=["#3ddc84", "#ff5a4e"])
+LABEL_COLOR = alt.Scale(domain=["RECIPE", "RECOMMENDED"], range=["#38d6e8", "#f5a623"])
 
 
 def trend_chart(df: pd.DataFrame, metric: str, title: str, axis_format: str = ""):
@@ -306,8 +330,8 @@ def trend_chart(df: pd.DataFrame, metric: str, title: str, axis_format: str = ""
     y_axis = alt.Axis(format=axis_format) if axis_format else alt.Undefined
     layers = [base.mark_line(color="#4b5866").encode(y=alt.Y(f"{metric}:Q", title=title, axis=y_axis)),
               base.mark_circle(size=70, opacity=1).encode(
-                  y=f"{metric}:Q", color=alt.Color("result:N", scale=COLOR, legend=None),
-                  tooltip=["run", "ticker", "model", "label", alt.Tooltip(f"{metric}:Q", format=".3f"), "result"])]
+                  y=f"{metric}:Q", color=alt.Color("label:N", scale=LABEL_COLOR, title=None),
+                  tooltip=["run", "ticker", "model", "label", alt.Tooltip(f"{metric}:Q", format=".3f")])]
     return (alt.layer(*layers).properties(height=220).configure(background="transparent")
             .configure_axis(gridColor="#243140", labelColor="#7b8a99", titleColor="#7b8a99", domainColor="#243140"))
 
@@ -316,8 +340,7 @@ with tab_hist:
     if hist.empty:
         st.info("No runs yet.")
     else:
-        st.caption(f"Lot {LOT} · {hist['run'].nunique()} runs · {len(hist)} model results · "
-                  f"{int((hist['result']=='PASS').sum())} pass, {int((hist['result']=='FAIL').sum())} fail")
+        st.caption(f"Lot {LOT} · {hist['run'].nunique()} runs · {len(hist)} model results so far.")
         mod = hist[hist["model"] == st.selectbox("Model to trend", MODEL_NAMES,
                                                   format_func=lambda m: MODEL_LABELS[m], key="trend_model")]
         if not mod.empty:
@@ -328,27 +351,47 @@ with tab_hist:
         show["model"] = show["model"].map(MODEL_LABELS)
         for col, fmt in {"rmse": "{:.3f}", "mae": "{:.3f}", "mape": "{:.2f}", "dir_acc": "{:.3f}"}.items():
             show[col] = show[col].map(fmt.format)
-        st.dataframe(show.style.map(lambda v: {"PASS": "color:#3ddc84", "FAIL": "color:#ff5a4e"}.get(v, ""),
-                                    subset=["result"]), hide_index=True, width="stretch")
+        st.dataframe(show, hide_index=True, width="stretch")
         if st.button("Clear history", key="clear_button"):
             st.session_state["history"], st.session_state["last_run"] = [], None
             st.rerun()
 
 with tab_about:
     st.markdown(f"""
-**Models.** Naive (predicts tomorrow = today, the random-walk baseline); Ridge regression on lag/rolling-mean
-features (plain OLS was tried first and collapsed to a near-constant prediction because those features are
-correlated above 0.99 -- Ridge's regularization fixes that); random forest on the same features; ARIMA(5,1,0), a
-rolling one-step-ahead forecast on the close series directly.
+### How to use this app
 
-**Metrics.** RMSE/MAE/MAPE measure price-level error. Directional accuracy is whether the model got tomorrow's
-up/down right -- a coin flip is 50%, and the naive model sits at ~0% by construction (it only ever predicts
-"no change", so the rare flat trading day aside, it never has a direction to be right or wrong about).
+1. **Pick a ticker** in the sidebar, or press **⭐ Load recommended** to load a config chosen to
+   best show this project's main finding (see below).
+2. Press **▶ Run forecast**. This fits all four models on the last {HISTORY_YEARS} years of daily
+   prices and backtests them on a held-out recent period (the **RUN** tab) -- scrub the **Day**
+   slider to watch each model's forecast unfold day by day against what actually happened.
+3. Press **⇄ Compare with recommended** instead to run your own config and the recommended one
+   side by side.
+4. Switch to the **FUTURE** tab, pick a horizon (1 month to 2 years), and press
+   **🔮 Forecast future** to project past today's price into dates that haven't happened yet.
+5. **RUN HISTORY** keeps every run you've made this session, with a trend chart per model.
+6. Use **⬇ Export** (in RUN or FUTURE) to download predictions, metrics, or the run log as
+   CSV/JSON.
 
-**Specs.** {SPECS['beats_naive_rmse']['text']}. {SPECS['directional_accuracy']['text']}. Expect most models to
-FAIL most of the time -- that's the project's central, honest finding: liquid stock prices are close enough to
-a random walk that "tomorrow equals today" is a hard baseline to beat, and none of these models finds a
-reliable directional edge either.
+### Models
+
+Naive (predicts tomorrow = today, the random-walk baseline); Ridge regression on lag/rolling-mean
+features (plain OLS was tried first and collapsed to a near-constant prediction because those
+features are correlated above 0.99 -- Ridge's regularization fixes that); random forest on the
+same features; ARIMA(5,1,0), a rolling one-step-ahead forecast on the close series directly.
+
+### Interpreting the metrics
+
+RMSE, MAE and MAPE all measure price-level error in different units -- lower is better for each.
+Directional accuracy is whether the model got tomorrow's up/down right: 50% is a coin flip, and
+the naive model sits at ~0% by construction (it only ever predicts "no change", so the rare flat
+trading day aside, it never has a direction to be right or wrong about).
+
+A consistent pattern across tickers: Ridge and ARIMA land close to naive's RMSE, and none of the
+models reliably beats a coin flip on direction. That's not these models failing to be tuned well
+enough -- it's the project's central finding, and an expected one: liquid stock prices are close
+to a random walk, so "tomorrow equals today" is a genuinely hard baseline to beat, and short-term
+direction is close to unpredictable from price history alone.
 
 **Recommended config.** {IDEAL['why']}
 
@@ -356,11 +399,11 @@ reliable directional edge either.
 visible directly in the test-period chart above as a flat line once the actual price breaks into new territory.
 This is a structural property of tree ensembles on trending series, not a tuning problem.
 
-**The FUTURE tab** fits every model on *all* available history and projects past today, instead of holding
-out a known test period. There's no real outcome to score these against, so no RMSE or spec applies there --
-only the projection and, where available, an uncertainty band. Naive's band comes from historical volatility
+**The FUTURE tab** fits every model on recent history and projects past today, instead of holding
+out a known test period. There's no real outcome to score these against, so no error metric applies there --
+only the projection and, where possible, an uncertainty band. Naive's band comes from historical volatility
 scaled by sqrt(time), the standard random-walk result; ARIMA's comes from its own fitted model. Notice ARIMA's
-band is usually *narrower* than naive's despite ARIMA backtesting worse (see Findings) -- a model's own
+band is usually *narrower* than naive's despite ARIMA backtesting worse above -- a model's own
 parametric confidence interval isn't automatically more trustworthy than a simple empirical one. Random
 forest and Ridge have no native uncertainty estimate and are forecast recursively (each day's prediction
 feeds the next day's lag features), which compounds error with every step.

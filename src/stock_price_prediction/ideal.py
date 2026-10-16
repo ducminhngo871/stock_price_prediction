@@ -10,10 +10,10 @@ shows that result with the least noise.
 
 IDEAL = {
     "settings": {"ticker": "AAPL", "test_size": 0.2},
-    "why": "AAPL has the longest clean, continuous history in this dataset (2013-present, no missing "
-           "days) and is one of the most liquid single stocks traded, so its price is about as close to "
-           "an efficient, information-driven random walk as a single name gets. On this config Ridge and "
-           "ARIMA land within ~1% of naive's RMSE, and every model's directional accuracy sits near 50% -- "
-           "the clearest demonstration of the project's main finding.",
+    "why": "AAPL is one of the most liquid, widely covered single stocks traded, with no missing "
+           "trading days, so its price is about as close to an efficient, information-driven random "
+           "walk as a single name gets. On this config Ridge and ARIMA land close to naive's RMSE, "
+           "and every model's directional accuracy sits near 50% -- the clearest demonstration of "
+           "the project's main finding.",
     "source": "results/price_forecast_AAPL",
 }

@@ -32,11 +32,17 @@ def available_tickers() -> list[str]:
 
 
 def load_kaggle(tickers: list[str] | None = None) -> pd.DataFrame:
-    """Load the Kaggle S&P 500 CSV (2013-02-08 to 2018-02-07)."""
-    df = pd.read_csv(KAGGLE_CSV, parse_dates=["date"])
+    """Load the Kaggle S&P 500 CSV (2013-02-08 to 2018-02-07).
+
+    Filters by ticker before parsing dates, not after: the file holds 505 tickers, and
+    date-parsing is the slow part of reading it, so there's no reason to pay that cost
+    for the ~504 tickers a single-ticker call is about to throw away.
+    """
+    df = pd.read_csv(KAGGLE_CSV)
     df = df.rename(columns={"Name": "ticker"})
     if tickers is not None:
         df = df[df["ticker"].isin(tickers)]
+    df["date"] = pd.to_datetime(df["date"])
     return df[["date", "ticker", "open", "high", "low", "close", "volume"]].sort_values(["ticker", "date"])
 
 
@@ -44,20 +50,25 @@ def fetch_yfinance(tickers: list[str], start: str = "2018-02-08", end: str | Non
                     cache: bool = True) -> pd.DataFrame:
     """Download daily OHLCV for tickers from yfinance, caching each ticker as a CSV.
 
-    A cached file is only reused if it already reaches the requested end date (within
-    a long weekend's slack); otherwise it's refetched. Without this check, a cache
-    written once would silently serve the same stale end date forever -- the opposite
-    of what an app showing "latest data" needs.
+    A cached file is only reused if it already covers both the requested start and end
+    dates (within a long weekend's slack); otherwise it's refetched. Both ends matter:
+    without the end check, a cache written once would silently serve the same stale
+    "latest" date forever; without the start check, a narrower-start cache (e.g. from
+    load_recent's trailing-years window) would silently miss older rows a full-history
+    call needs, or vice versa -- both call this with the same per-ticker cache file.
     """
     import yfinance as yf
 
     target_end = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+    target_start = pd.Timestamp(start)
     frames = []
     YFINANCE_DIR.mkdir(parents=True, exist_ok=True)
     for ticker in tickers:
         cache_path = YFINANCE_DIR / f"{ticker}.csv"
         cached = pd.read_csv(cache_path, parse_dates=["date"]) if cache_path.exists() else None
-        fresh_enough = cached is not None and cached["date"].max() >= target_end - pd.Timedelta(days=4)
+        fresh_enough = (cached is not None
+                        and cached["date"].max() >= target_end - pd.Timedelta(days=4)
+                        and cached["date"].min() <= target_start + pd.Timedelta(days=4))
         if cache and fresh_enough:
             frame = cached
         else:
@@ -73,6 +84,11 @@ def fetch_yfinance(tickers: list[str], start: str = "2018-02-08", end: str | Non
             frame = frame[["date", "ticker", "open", "high", "low", "close", "volume"]]
             if cache:
                 frame.to_csv(cache_path, index=False)
+        # A reused cache file can span well past what was asked for -- e.g. it was written by
+        # an earlier "latest data" call, and this call pins a specific historical "as of" date.
+        # Trim to exactly [target_start, target_end] so a historical request can never silently
+        # include newer rows the cache happens to already have.
+        frame = frame[(frame["date"] >= target_start) & (frame["date"] <= target_end)]
         frames.append(frame)
     if not frames:
         # Explicit dtypes matter here: an untyped empty frame defaults every column to
@@ -120,8 +136,33 @@ def adjust_kaggle_for_late_splits(df: pd.DataFrame, ticker: str) -> pd.DataFrame
     return df
 
 
+def _raise_if_stale(df: pd.DataFrame, tickers: list[str], end: str | None) -> None:
+    """When "latest data" was requested (end=None), silently handing back old data for a
+    ticker with nothing recent -- typically one delisted, renamed, or acquired -- would
+    look like a normal, current result. A wide cutoff on purpose: a dead ticker's data
+    stops entirely (years stale), a world apart from an active ticker's free-data-feed
+    lag, observed up to ~2 months on some names.
+    """
+    if end is not None:
+        return
+    stale_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=90)
+    for ticker in tickers:
+        last = df.loc[df["ticker"] == ticker, "date"].max()
+        if pd.isna(last) or last < stale_cutoff:
+            when = "no data at all" if pd.isna(last) else f"last priced {last.date()}"
+            raise ValueError(f"No recent price data for {ticker} ({when}). It may be delisted, "
+                             "renamed, or acquired, or the data source may be lagging for this "
+                             "ticker. Try another ticker, or pin an earlier 'as of' date.")
+
+
 def load_combined(tickers: list[str], end: str | None = None, cache: bool = True) -> pd.DataFrame:
-    """Kaggle history (2013-2018) + yfinance (2018-02-08 onward), stitched into one consistent series."""
+    """Kaggle history (2013-2018) + yfinance (2018-02-08 onward), stitched into one consistent series.
+
+    Use this for a full backtest or report figure. For the app's interactive use, prefer
+    `load_recent`: it skips the Kaggle file and the stitching logic entirely, which is
+    both the slowest part of this function and unnecessary for a window short enough to
+    be covered by yfinance alone.
+    """
     kaggle = pd.concat(
         [adjust_kaggle_for_late_splits(group, ticker)
          for ticker, group in load_kaggle(tickers).groupby("ticker")],
@@ -131,20 +172,25 @@ def load_combined(tickers: list[str], end: str | None = None, cache: bool = True
     combined = pd.concat([kaggle, recent], ignore_index=True)
     combined = combined.drop_duplicates(subset=["ticker", "date"], keep="last")
     combined = combined.sort_values(["ticker", "date"]).reset_index(drop=True)
-
-    if end is None:
-        # "Latest data" was requested; silently handing back only the Kaggle slice (which
-        # ends 2018-02-07) for a ticker yfinance has no fresh data for -- typically one
-        # delisted, renamed, or acquired since -- would look like a normal, current result.
-        # A wide cutoff on purpose: genuinely dead tickers are stuck at exactly 2018-02-07
-        # (yfinance returned nothing at all), years stale -- a world apart from an actively
-        # traded ticker's free-data-feed lag, observed up to ~2 months on some names.
-        stale_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=90)
-        for ticker in tickers:
-            last = combined.loc[combined["ticker"] == ticker, "date"].max()
-            if pd.isna(last) or last < stale_cutoff:
-                when = "no data at all" if pd.isna(last) else f"last priced {last.date()}"
-                raise ValueError(f"No recent price data for {ticker} ({when}). It may be delisted, "
-                                 "renamed, or acquired since 2018, or the data source may be lagging "
-                                 "for this ticker. Try another ticker, or pin an earlier 'as of' date.")
+    _raise_if_stale(combined, tickers, end)
     return combined
+
+
+def load_recent(tickers: list[str], years: int = 5, end: str | None = None, cache: bool = True) -> pd.DataFrame:
+    """Trailing `years` of daily OHLCV from yfinance alone -- no Kaggle file, no stitching.
+
+    yfinance's own OHLC is already fully split-adjusted (see module docstring), so a
+    window this short needs none of load_combined's stitching logic. This skips: parsing
+    the 505-ticker, 619k-row Kaggle CSV; a second network round trip per ticker for split
+    metadata; and most of the rows a backtest model would otherwise have to fit on --
+    the main reason an interactive app built on load_combined felt slow.
+    """
+    target_end = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+    start = target_end - pd.DateOffset(years=years)
+    recent = fetch_yfinance(tickers, start=start.strftime("%Y-%m-%d"), end=end, cache=cache)
+    # Trim even if a wider-range cache (e.g. from a prior load_combined call) was reused,
+    # so this always does the one job load_recent exists for: bounding how much data the
+    # rest of the pipeline has to process.
+    recent = recent[recent["date"] >= start].sort_values(["ticker", "date"]).reset_index(drop=True)
+    _raise_if_stale(recent, tickers, end)
+    return recent

@@ -7,7 +7,7 @@ exactly at the point the two sources are joined.
 import pandas as pd
 import pytest
 
-from stock_price_prediction.data import KAGGLE_END, load_combined, load_kaggle
+from stock_price_prediction.data import KAGGLE_END, load_combined, load_kaggle, load_recent
 
 TEST_TICKERS = ["AAPL", "NVDA", "JNJ"]
 
@@ -64,3 +64,24 @@ def test_load_combined_raises_clearly_for_a_ticker_with_no_recent_data():
     for would look like a normal, current result -- it must raise instead."""
     with pytest.raises(ValueError, match="No recent price data"):
         load_combined(["XLNX"], end=None)
+
+
+def test_load_recent_is_bounded_to_the_requested_window():
+    """The whole point of load_recent is a smaller, faster dataset -- it must not silently
+    return more than asked for, even if a wider-range file is already cached locally."""
+    df = load_recent(["AAPL"], years=5, end="2024-07-01")
+    assert not df.empty
+    assert df["date"].min() >= pd.Timestamp("2024-07-01") - pd.DateOffset(years=5)
+    assert df["date"].max() <= pd.Timestamp("2024-07-01")
+    assert df.isnull().sum().sum() == 0
+
+
+def test_load_recent_matches_load_combined_over_their_shared_window():
+    """load_recent skips the Kaggle file and its split-adjustment entirely; its prices for
+    dates both cover should still agree with load_combined's (same underlying yfinance
+    source, just without the Kaggle-stitching machinery)."""
+    recent = load_recent(["AAPL"], years=2, end="2024-07-01")
+    combined = load_combined(["AAPL"], end="2024-07-01")
+    merged = recent.merge(combined, on="date", suffixes=("_recent", "_combined"))
+    assert len(merged) == len(recent)
+    assert (merged["close_recent"] - merged["close_combined"]).abs().max() < 0.01
