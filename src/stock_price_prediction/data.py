@@ -75,7 +75,16 @@ def fetch_yfinance(tickers: list[str], start: str = "2018-02-08", end: str | Non
                 frame.to_csv(cache_path, index=False)
         frames.append(frame)
     if not frames:
-        return pd.DataFrame(columns=["date", "ticker", "open", "high", "low", "close", "volume"])
+        # Explicit dtypes matter here: an untyped empty frame defaults every column to
+        # object, and concatenating that with the (float) Kaggle portion below silently
+        # upcasts the whole combined "close" column to object even though this frame
+        # contributes zero rows -- which then breaks ARIMA with an opaque isnan TypeError.
+        return pd.DataFrame({
+            "date": pd.Series(dtype="datetime64[ns]"), "ticker": pd.Series(dtype=str),
+            "open": pd.Series(dtype=float), "high": pd.Series(dtype=float),
+            "low": pd.Series(dtype=float), "close": pd.Series(dtype=float),
+            "volume": pd.Series(dtype=float),
+        })
     return pd.concat(frames, ignore_index=True).sort_values(["ticker", "date"])
 
 
@@ -99,6 +108,11 @@ def adjust_kaggle_for_late_splits(df: pd.DataFrame, ticker: str) -> pd.DataFrame
     if late_splits.empty:
         return df
     df = df.sort_values("date").copy()
+    # Not every "split" yfinance reports is a clean integer ratio: merger/acquisition share
+    # conversions (e.g. SunTrust -> Truist at 1.371 shares) show up here too, and pandas 3.x
+    # raises rather than silently upcasting when a fractional value is written into volume's
+    # int64 column.
+    df["volume"] = df["volume"].astype(float)
     for split_date, ratio in late_splits.sort_index(ascending=False).items():
         mask = df["date"] < split_date
         df.loc[mask, ["open", "high", "low", "close"]] /= ratio
@@ -116,4 +130,21 @@ def load_combined(tickers: list[str], end: str | None = None, cache: bool = True
     recent = fetch_yfinance(tickers, start="2018-02-08", end=end, cache=cache)
     combined = pd.concat([kaggle, recent], ignore_index=True)
     combined = combined.drop_duplicates(subset=["ticker", "date"], keep="last")
-    return combined.sort_values(["ticker", "date"]).reset_index(drop=True)
+    combined = combined.sort_values(["ticker", "date"]).reset_index(drop=True)
+
+    if end is None:
+        # "Latest data" was requested; silently handing back only the Kaggle slice (which
+        # ends 2018-02-07) for a ticker yfinance has no fresh data for -- typically one
+        # delisted, renamed, or acquired since -- would look like a normal, current result.
+        # A wide cutoff on purpose: genuinely dead tickers are stuck at exactly 2018-02-07
+        # (yfinance returned nothing at all), years stale -- a world apart from an actively
+        # traded ticker's free-data-feed lag, observed up to ~2 months on some names.
+        stale_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=90)
+        for ticker in tickers:
+            last = combined.loc[combined["ticker"] == ticker, "date"].max()
+            if pd.isna(last) or last < stale_cutoff:
+                when = "no data at all" if pd.isna(last) else f"last priced {last.date()}"
+                raise ValueError(f"No recent price data for {ticker} ({when}). It may be delisted, "
+                                 "renamed, or acquired since 2018, or the data source may be lagging "
+                                 "for this ticker. Try another ticker, or pin an earlier 'as of' date.")
+    return combined

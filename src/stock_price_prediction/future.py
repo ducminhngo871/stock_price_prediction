@@ -45,6 +45,13 @@ def _latest_feature_row(history: pd.DataFrame) -> pd.DataFrame:
         "return_1": close.iloc[-1] / close.iloc[-2] - 1,
         "volume_today": history["volume"].iloc[-1],
     }
+    missing, extra = set(FEATURE_COLUMNS) - row.keys(), row.keys() - set(FEATURE_COLUMNS)
+    if missing or extra:
+        # Fail loudly and specifically here rather than with a bare KeyError several frames
+        # away in pandas -- this pairs a feature list in one module with values built by hand
+        # in another, and the two have drifted out of sync once already (see features.py).
+        raise RuntimeError(f"_latest_feature_row out of sync with FEATURE_COLUMNS: "
+                           f"missing={missing or None}, extra={extra or None}")
     return pd.DataFrame([row])[FEATURE_COLUMNS]
 
 

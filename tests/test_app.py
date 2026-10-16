@@ -78,3 +78,14 @@ def test_forecast_future_populates_future_run():
     assert len(fr["dates"]) == 21  # "1 month" -> 21 trading days
     assert set(fr["forecasts"]) == {"naive", "linear_regression", "random_forest", "arima"}
     assert fr["dates"][0] > fr["last_date"]
+
+
+def test_forecast_future_shows_a_clean_error_for_a_delisted_ticker():
+    """XLNX (Xilinx) was delisted in 2022; load_combined raises ValueError for it when
+    "latest" is requested. The app must show st.error, not crash."""
+    at = fresh()
+    at.selectbox(key="ticker").set_value("XLNX").run()
+    at.button(key="future_button").click().run()
+    assert not at.exception
+    assert at.session_state["future_run"] is None
+    assert any("No recent price data" in e.value for e in at.error)

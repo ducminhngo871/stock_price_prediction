@@ -135,15 +135,21 @@ def comparison_table(runs: list[dict]) -> pd.DataFrame:
 
 
 if run or split:
-    cfg_snapshot = current_config()
-    runs = [process_run(cfg_snapshot, "RECIPE" if split else "RECOMMENDED" if is_ideal else "RECIPE")]
-    if split:
-        runs.append(process_run(ideal_config(cfg_snapshot), "RECOMMENDED"))
-    st.session_state["last_run"] = {"runs": runs, "comparison": split}
+    try:
+        cfg_snapshot = current_config()
+        runs = [process_run(cfg_snapshot, "RECIPE" if split else "RECOMMENDED" if is_ideal else "RECIPE")]
+        if split:
+            runs.append(process_run(ideal_config(cfg_snapshot), "RECOMMENDED"))
+        st.session_state["last_run"] = {"runs": runs, "comparison": split}
+    except ValueError as exc:
+        st.error(str(exc))
 
 if forecast_future:
-    end = None if use_latest else str(end_date)
-    st.session_state["future_run"] = simulate_future(ticker, end, HORIZON_OPTIONS[horizon_label])
+    try:
+        end = None if use_latest else str(end_date)
+        st.session_state["future_run"] = simulate_future(ticker, end, HORIZON_OPTIONS[horizon_label])
+    except ValueError as exc:
+        st.error(str(exc))
 
 hist = pd.DataFrame(st.session_state["history"])
 
